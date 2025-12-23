@@ -2422,41 +2422,40 @@ def api_pipeline():
         
         config = get_default_config()
         
+        # Use ReconEngine (Legacy) instead of separate runners to match CLI 'scan' behavior
+        # This ensures recursive expansion and better efficiency as observed by the user
+        engine = ReconEngine(config, silent_mode=True)
+        
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         
         try:
-            recon_runner = ReconRunner(config=config, silent_mode=True, output_dir=OUTPUT_DIR)
-            recon_result = loop.run_until_complete(recon_runner.run(target))
-            
-            filter_runner = JsFilterRunner(silent_mode=True, output_dir=OUTPUT_DIR)
-            filter_result = filter_runner.run(target, recon_result=recon_result)
-            
-            analysis_runner = JsAnalysisRunner(silent_mode=True, output_dir=OUTPUT_DIR)
-            analysis_result = analysis_runner.run(target, js_filter_result=filter_result)
-            
+            # Run the full scan
+            loop.run_until_complete(engine.run(target, analyze_js=True))
         finally:
             loop.close()
         
-        from src.output.html_report import generate_modular_html_report
-        try:
-            generate_modular_html_report(
-                target=target,
-                recon_result=recon_result,
-                js_filter_result=filter_result,
-                js_analysis_result=analysis_result,
-                output_dir=OUTPUT_DIR
-            )
-        except Exception:
-            pass
+        # Load results from datastore to match the modular response structure expected by UI
+        # ReconEngine saves results to disk compatible with DataStore
+        from src.core.normalizer import URLNormalizer
+        normalizer = URLNormalizer()
+        normalized_target = normalizer.normalize_domain(target)
         
+        recon_result = datastore.load_recon_result(normalized_target)
+        filter_result = datastore.load_js_filter_result(normalized_target)
+        analysis_result = datastore.load_js_analysis_result(normalized_target)
+        
+        response_data = {}
+        if recon_result:
+            response_data['recon'] = recon_result.to_dict()
+        if filter_result:
+            response_data['filter'] = filter_result.to_dict()
+        if analysis_result:
+            response_data['analysis'] = analysis_result.to_dict()
+            
         return jsonify({
             'success': True,
-            'data': {
-                'recon': recon_result.to_dict(),
-                'filter': filter_result.to_dict(),
-                'analysis': analysis_result.to_dict()
-            }
+            'data': response_data
         })
         
     except Exception as e:
